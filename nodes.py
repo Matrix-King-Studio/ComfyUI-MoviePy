@@ -1,12 +1,13 @@
 import os
+import io
 
+import torchaudio
 import numpy as np
 
 import folder_paths
 
 from moviepy import ImageClip, AudioClip 
-from server import PromptServer
-from aiohttp import web
+from comfy_extras.nodes_audio import insert_or_replace_vorbis_comment
 
 
 class ImageClipNode:
@@ -27,15 +28,6 @@ class ImageClipNode:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "is_mask": ("BOOLEAN", {
-                    "default": False,
-                }),
-                "transparent": ("BOOLEAN", {
-                    "default": True,
-                }),
-                "fromalpha": ("BOOLEAN", {
-                    "default": False,
-                }),
                 "duration": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.1,
@@ -49,21 +41,20 @@ class ImageClipNode:
     FUNCTION = "create_clip"
     CATEGORY = "Media Processing"
 
-    def create_clip(self, image, is_mask, transparent, fromalpha, duration):
+    def create_clip(self, image, duration):
         """
         Converts the input image into an ImageClip.
         """
         # Convert image to numpy array
-        img = np.array(image)
+        img = image.detach().cpu().numpy()[0]
+        img = (img * 255).astype(np.uint8)
 
         # Create an ImageClip
         clip = ImageClip(
-            img, 
-            is_mask=is_mask, 
-            transparent=transparent, 
-            fromalpha=fromalpha, 
+            img,
             duration=duration
         )
+        clip.show(2)
 
         # Process output, e.g., resizing or storing metadata if needed
         return (clip,)
@@ -107,7 +98,7 @@ class AudioDurationNode:
 
 
 
-class SaveVideo:
+class SaveVideoNode:
     """
     ComfyUI Node for saving VideoCLIP objects to a video file.
     """
@@ -124,12 +115,8 @@ class SaveVideo:
         return {
             "required": {
                 "video_clip": ("VideoCLIP",),
-                "audio": ("AUDIO",),
+                "audio": ("AUDIO", ),
                 "filename_prefix": ("STRING", {"default": "video/ComfyUI"}),
-                "fps": ("INT", {"default": 24, "min": 1, "max": 60}),
-                "codec": ("STRING", {"default": "libx264"}),
-                "audio_codec": ("STRING", {"default": "aac"}),
-                "audio_bitrate": ("STRING", {"default": "128k"}),
             },
         }
 
@@ -145,36 +132,42 @@ class SaveVideo:
         video_clip,
         audio,
         filename_prefix="ComfyUI",
-        fps=24,
-        codec="libx264",
-        audio_codec="aac",
-        audio_bitrate="128k",
     ):
         """
         Saves a VideoCLIP object to a video file, optionally including audio.
         """
+
         filename_prefix += self.prefix_append
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(
             filename_prefix, self.output_dir
         )
 
+
+        audio_file = f"{filename}_{counter:05}_.mp3"
+        audio_file_path = os.path.join(full_output_folder, audio_file)
+        torchaudio.save(audio_file_path, audio["waveform"][0], audio["sample_rate"])
+
+
         # Ensure output folder exists
         os.makedirs(full_output_folder, exist_ok=True)
 
         # Generate unique file name
-        file = f"{filename}_{counter:05}_.mp4"
-        output_path = os.path.join(full_output_folder, file)
+        video_file = f"{filename}_{counter:05}_.mp4"
+        output_path = os.path.join(full_output_folder, video_file)
 
         # Save the video clip
         video_clip.write_videofile(
             output_path,
-            fps=fps,
-            audio=audio,
+            fps=25,
+            audio=audio_file_path,
         )
+        video_clip.close()
+
+        os.remove(audio_file_path)
 
         # Metadata or additional operations if required
         results = {
-            "filename": file,
+            "filename": video_file,
             "subfolder": subfolder,
             "type": self.type,
         }
@@ -185,11 +178,11 @@ class SaveVideo:
 NODE_CLASS_MAPPINGS = {
     "ImageClipNode": ImageClipNode,
     "AudioDurationNode": AudioDurationNode,
-    "SaveVideo": SaveVideo,
+    "SaveVideoNode": SaveVideoNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageClipNode": "Image Clip Node",
     "AudioDurationNode": "Audio Duration Node",
-    "SaveVideo": "Save Video Node",
+    "SaveVideoNode": "Save Video Node",
 }
